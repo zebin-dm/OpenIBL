@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import torch.distributed as dist
-
+from ibl.models.prnet import FixBatchNorm
 from .utils.meters import AverageMeter
 
 class Trainer(object):
@@ -24,7 +24,7 @@ class Trainer(object):
     def train(self, epoch, sub_id, data_loader, optimizer, train_iters,
                         print_freq=1, vlad=True, loss_type='triplet'):
         self.model.train()
-
+        # self.model.apply(FixBatchNorm)
         batch_time = AverageMeter()
         data_time = AverageMeter()
         losses = AverageMeter()
@@ -223,12 +223,13 @@ class SFRSTrainer(object):
                               batch_time.val, batch_time.avg,
                               data_time.val, data_time.avg,
                               losses_hard.val, losses_hard.avg,
-                              losses_soft.val, losses_soft.avg))
+                              losses_soft.val, losses_soft.avg), end="\r")
 
     def _parse_data(self, inputs):
         imgs = [input[0] for input in inputs]
         imgs = torch.stack(imgs).permute(1,0,2,3,4)
         imgs_easy = imgs[:,:self.neg_num+2]
+        # imgs_easy = imgs_easy.contiguous()
         imgs_diff = torch.cat((imgs[:,0].unsqueeze(1).contiguous(), imgs[:,self.neg_num+2:]), dim=1)
         return imgs_easy.cuda(self.gpu), imgs_diff.cuda(self.gpu)
 

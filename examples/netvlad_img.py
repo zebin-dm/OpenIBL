@@ -83,17 +83,22 @@ def update_sampler(sampler, model, loader, query, gallery, sub_set, vlad=True, g
     del distmat
 
 def get_model(args):
-    base_model = models.create(args.arch, train_layers=args.layers, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
+    # base_model = models.create(args.arch, train_layers=args.layers, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
+    base_model = models.create(args.arch, bb_name=args.bb_name)
+   
     if args.vlad:
-        pool_layer = models.create('netvlad', dim=base_model.feature_dim)
+        # pool_layer = models.create('netvlad', dim=base_model.feature_dim)
         # vgg16_pitts_64_desc_cen_mat.hdf5
-        initcache = osp.join(args.init_dir, args.arch + '_' + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
+        # initcache = osp.join(args.init_dir, args.arch + '_' + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
+        initcache = osp.join(args.init_dir, args.arch + '_' + args.bb_name + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
         if (dist.get_rank()==0):
             print ('Loading centroids from {}'.format(initcache))
-        with h5py.File(initcache, mode='r') as h5:
-            pool_layer.clsts = h5.get("centroids")[...]
-            pool_layer.traindescs = h5.get("descriptors")[...]
-            pool_layer._init_params()
+        pool_layer = models.create('netvlad', dim=base_model.feature_dim, parafile=initcache)
+        pool_layer._init_params()
+        # with h5py.File(initcache, mode='r') as h5:
+        #     pool_layer.clsts = h5.get("centroids")[...]
+        #     pool_layer.traindescs = h5.get("descriptors")[...]
+        #     pool_layer._init_params()
 
         model = models.create('embednet', base_model, pool_layer)
     else:
@@ -105,7 +110,7 @@ def get_model(args):
 
     model.cuda(args.gpu)
     model = nn.parallel.DistributedDataParallel(
-                model, device_ids=[args.gpu], output_device=args.gpu, find_unused_parameters=True
+                model, device_ids=[args.gpu], output_device=args.gpu, find_unused_parameters=False
             )
     return model
 
@@ -136,7 +141,7 @@ def main_worker(args):
         print("==========\nArgs:{}\n==========".format(args))
 
     # Create data loaders
-    iters = args.iters if (args.iters>0) else None
+    iters = args.iters if (args.iters > 0) else None
     dataset, train_loader, val_loader, test_loader, sampler, train_extract_loader = get_data(args, iters)
 
     # Create model
@@ -259,6 +264,7 @@ if __name__ == '__main__':
     # model
     parser.add_argument('-a', '--arch', type=str, default='vgg16',
                         choices=models.names())
+    parser.add_argument('--bb_name', type=str, default="")
     parser.add_argument('--layers', type=str, default='conv5')
     parser.add_argument('--nowhiten', action='store_true')
     parser.add_argument('--syncbn', action='store_true')
@@ -286,7 +292,7 @@ if __name__ == '__main__':
     # path
     working_dir = osp.dirname(osp.abspath(__file__))
     parser.add_argument('--data-dir', type=str, metavar='PATH',
-                        default=osp.join(working_dir, 'data'))
+                        default="/data/zebin/data/Pittsburgh")
     parser.add_argument('--logs-dir', type=str, metavar='PATH',
                         default=osp.join(working_dir, 'logs'))
     parser.add_argument('--init-dir', type=str, metavar='PATH',

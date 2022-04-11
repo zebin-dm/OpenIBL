@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import math
 import numpy as np
 import copy
+import h5py
 
 class NetVLAD(nn.Module):
     """NetVLAD layer implementation"""
 
-    def __init__(self, num_clusters=64, dim=512, alpha=100.0, normalize_input=True):
+    def __init__(self, num_clusters=64, dim=512, alpha=100.0, normalize_input=True, parafile=None):
         """
         Args:
             num_clusters : int
@@ -27,18 +28,20 @@ class NetVLAD(nn.Module):
         self.normalize_input = normalize_input
         self.conv = nn.Conv2d(dim, num_clusters, kernel_size=(1, 1), bias=False)
         self.centroids = nn.Parameter(torch.rand(num_clusters, dim), requires_grad=True)
-
-        self.clsts = None
-        self.traindescs = None
+        self.parafile = parafile
 
     def _init_params(self):
-        clstsAssign = self.clsts / np.linalg.norm(self.clsts, axis=1, keepdims=True)
-        dots = np.dot(clstsAssign, self.traindescs.T)
+        
+        with h5py.File(self.parafile, mode='r') as h5:
+            clsts = h5.get("centroids")[...]
+            traindescs = h5.get("descriptors")[...]
+        clstsAssign = clsts / np.linalg.norm(clsts, axis=1, keepdims=True)
+        dots = np.dot(clstsAssign, traindescs.T)
         dots.sort(0)
         dots = dots[::-1, :] # sort, descending
 
         self.alpha = (-np.log(0.01) / np.mean(dots[0,:] - dots[1,:])).item()
-        self.centroids.data.copy_(torch.from_numpy(self.clsts))
+        self.centroids.data.copy_(torch.from_numpy(clsts))
         self.conv.weight.data.copy_(torch.from_numpy(self.alpha*clstsAssign).unsqueeze(2).unsqueeze(3))
 
     def forward(self, x):
@@ -71,7 +74,8 @@ class EmbedNet(nn.Module):
         self.net_vlad._init_params()
 
     def forward(self, x):
-        pool_x, x = self.base_model(x)
+        # pool_x, x = self.base_model(x)
+        x = self.base_model(x)
         vlad_x = self.net_vlad(x)
 
         # [IMPORTANT] normalize
@@ -79,7 +83,8 @@ class EmbedNet(nn.Module):
         vlad_x = vlad_x.view(x.size(0), -1)  # flatten
         vlad_x = F.normalize(vlad_x, p=2, dim=1)  # L2 normalize
 
-        return pool_x, vlad_x
+        # return pool_x, vlad_x
+        return None, vlad_x
 
 class EmbedNetPCA(nn.Module):
     def __init__(self, base_model, net_vlad, dim=4096):
@@ -109,16 +114,53 @@ class EmbedNetPCA(nn.Module):
 
         return vlad_x
 
+
+def weights_init_kaiming(m):
+    classname = m.__class__.__name__
+    if isinstance(m, nn.Conv2d) and classname != "SplAtConv2d":
+        nn.init.kaiming_normal_(m.weight, mode='fan_out')
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        nn.init.ones_(m.weight)
+        nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.Linear):
+        init_range = 1.0 / math.sqrt(m.out_features)
+        nn.init.uniform_(m.weight, -init_range, init_range)
+        nn.init.zeros_(m.bias)
+
+
+
+class ReductionNet(nn.Module):
+    def __init__(self, in_dim, out_dim=4096):
+        super().__init__()
+        self.reduction = nn.Linear(in_dim, out_dim)
+        weights_init_kaiming(self.reduction)
+    
+    def forward(self, x):
+        descriptor = self.reduction(x)
+        descriptor = F.normalize(descriptor, dim=1)
+        return descriptor
+
+
 class EmbedRegionNet(nn.Module):
-    def __init__(self, base_model, net_vlad, tuple_size=1):
+    def __init__(self, base_model, net_vlad, tuple_size=1, reduce=False, reduce_dim=4096):
         super(EmbedRegionNet, self).__init__()
         self.base_model = base_model
         self.net_vlad = net_vlad
         self.tuple_size = tuple_size
+        self.reduce_ = reduce
+        if self.reduce_:
+            self.reduce_net = ReductionNet(in_dim=base_model.feature_dim*net_vlad.num_clusters, out_dim=reduce_dim)
+        
 
     def _init_params(self):
         self.base_model._init_params()
         self.net_vlad._init_params()
+    
+    def load_state(self, pth_file):
+        state_dict = torch.load(pth_file, map_location=torch.device("cpu"))
+        self.load_state_dict(state_dict=state_dict)
 
     def _compute_region_sim(self, feature_A, feature_B):
         # feature_A: B*C*H*W
@@ -134,6 +176,8 @@ class EmbedRegionNet(nn.Module):
 
         feature_A = reshape(feature_A)
         feature_B = reshape(feature_B)
+        # feature_A: NA*C*4*H/2*W/2
+        # feature_b: NPN*C*4*H/2*W/2
 
         # compute quarter-region features
         def aggregate_quarter(x):
@@ -147,6 +191,8 @@ class EmbedRegionNet(nn.Module):
 
         vlad_A_quarter = aggregate_quarter(feature_A)
         vlad_B_quarter = aggregate_quarter(feature_B)
+        # vlad_A_quarter: NA*4*64*512
+        # vlad_B_quarter: NPN*4*64*512
 
         # compute half-region features
         def quarter_to_half(vlad_x):
@@ -155,6 +201,8 @@ class EmbedRegionNet(nn.Module):
 
         vlad_A_half = quarter_to_half(vlad_A_quarter)
         vlad_B_half = quarter_to_half(vlad_B_quarter)
+        # vlad_A_half: NA*4*64*512
+        # vlad_B_half: NPN*4*64*512
 
         # compute global-image features
         def quarter_to_global(vlad_x):
@@ -162,22 +210,35 @@ class EmbedRegionNet(nn.Module):
 
         vlad_A_global = quarter_to_global(vlad_A_quarter)
         vlad_B_global = quarter_to_global(vlad_B_quarter)
+        # vlad_A_global: NA*1*64*512
+        # vlad_B_global: NPN*1*64*512
 
         def norm(vlad_x):
             N, B, C, _ = vlad_x.size()
             vlad_x = F.normalize(vlad_x, p=2, dim=3)  # intra-normalization
             vlad_x = vlad_x.view(N, B, -1)  # flatten
             vlad_x = F.normalize(vlad_x, p=2, dim=2)  # L2 normalize
+            if self.reduce_:
+                vlad_x = vlad_x.view(N*B, -1)  # flatten
+                vlad_x = self.reduce_net(vlad_x)
+                vlad_x = vlad_x.view(N, B, -1)  # flatten
             return vlad_x
 
         vlad_A = torch.cat((vlad_A_global, vlad_A_half, vlad_A_quarter), dim=1)
         vlad_B = torch.cat((vlad_B_global, vlad_B_half, vlad_B_quarter), dim=1)
+        # vlad_A: NA*9*64*512
+        # vlad_B: NPN*9*64*512
         vlad_A = norm(vlad_A)
         vlad_B = norm(vlad_B)
+        # vlad_A: NA*9*(64x512)
+        # vlad_B: NPN*9*(64*512)
 
         _, B, L = vlad_B.size()
         vlad_A = vlad_A.view(self.tuple_size,-1,B,L)
         vlad_B = vlad_B.view(self.tuple_size,-1,B,L)
+        # vlad_A: N*1*9*(64x512)
+        # vlad_B: N*(P+N)*9*(64*512)
+
 
         score = torch.bmm(vlad_A.expand_as(vlad_B).view(-1,B,L), vlad_B.view(-1,B,L).transpose(1,2))
         score = score.view(self.tuple_size,-1,B,B)
@@ -194,14 +255,18 @@ class EmbedRegionNet(nn.Module):
         return self._compute_region_sim(anchors, pairs)
 
     def forward(self, x):
-        pool_x, x = self.base_model(x)
-
+        # pool_x, x = self.base_model(x)
+        x = self.base_model(x)
         if (not self.training):
             vlad_x = self.net_vlad(x)
             # normalize
             vlad_x = F.normalize(vlad_x, p=2, dim=2)  # intra-normalization
             vlad_x = vlad_x.view(x.size(0), -1)  # flatten
             vlad_x = F.normalize(vlad_x, p=2, dim=1)  # L2 normalize
-            return pool_x, vlad_x
+            if self.reduce_:
+                vlad_x = self.reduce_net(vlad_x)
+            return vlad_x
 
         return self._forward_train(x)
+    
+

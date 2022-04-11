@@ -2,7 +2,7 @@ from __future__ import print_function, absolute_import
 import os.path as osp
 from collections import namedtuple
 import torch.distributed as dist
-
+from ibl.utils.logging import log_print
 from ..utils.data import Dataset
 from ..utils.osutils import mkdir_if_missing
 from ..utils.serialization import write_json, read_mat
@@ -31,14 +31,15 @@ class Pittsburgh(Dataset):
         self.load(verbose, scale)
 
     def arrange(self):
+        log_print("############################## self.scale : {}".format(self.scale))
         if self._check_integrity(self.scale):
             return
 
         raw_dir = osp.join(self.root, 'raw')
         if (not osp.isdir(raw_dir)):
             raise RuntimeError("Dataset not found.")
-        db_root = osp.join('Pittsburgh', 'images')
-        q_root = osp.join('Pittsburgh', 'queries')
+        db_root = osp.join('images', 'db')
+        q_root = osp.join('images', 'query')
 
         identities = []
         utms = []
@@ -47,6 +48,8 @@ class Pittsburgh(Dataset):
             struct = parse_dbStruct(osp.join(raw_dir, 'pitts'+self.scale+'_'+split+'.mat'))
             q_ids = []
             for fpath, utm in zip(struct.qImage, struct.utmQ):
+                # print("fpath: {}".format(fpath))
+                # print("utm  : {}".format(utm))
                 sid = fpath.split('_')[0]
                 if (sid not in q_pids.keys()):
                     pid = len(identities)
@@ -70,14 +73,14 @@ class Pittsburgh(Dataset):
             return q_ids, db_ids
 
         q_train_pids, db_train_pids = register('train')
-        # train_pids = q_train_pids + db_train_pids
+        train_pids = q_train_pids + db_train_pids
         q_val_pids, db_val_pids = register('val')
         q_test_pids, db_test_pids = register('test')
         assert len(identities)==len(utms)
 
-        # for pid in q_test_pids:
-        #     if (len(identities[pid])!=24):
-        #         print (identities[pid])
+        for pid in q_test_pids:
+            if (len(identities[pid])!=24):
+                print (identities[pid])
 
         # Save meta information into a json file
         meta = {'name': 'Pittsburgh_'+self.scale,
@@ -101,3 +104,9 @@ class Pittsburgh(Dataset):
         if rank == 0:
             write_json(splits, osp.join(self.root, 'splits_'+self.scale+'.json'))
         synchronize()
+        
+        
+if __name__ == "__main__":
+    data_path = "/data/zebin/data/Pittsburgh/pitts"
+    Pittsburgh(root=data_path)
+    

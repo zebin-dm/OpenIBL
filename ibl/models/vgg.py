@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from torch.nn import init
 import torchvision
 import torch
+# from torchvision.models import VGG16_Weights
 
 from ..utils.serialization import load_checkpoint, copy_state_dict
 
@@ -38,6 +39,7 @@ class VGG(nn.Module):
         if depth not in VGG.__factory:
             raise KeyError("Unsupported depth:", depth)
         vgg = VGG.__factory[depth](pretrained=pretrained)
+        # vgg = VGG.__factory[depth](weights=VGG16_Weights.IMAGENET1K_V1)
         layers = list(vgg.features.children())[:-2]
         self.base = nn.Sequential(*layers) # capture only feature part and remove last relu and maxpool
         self.gap = nn.AdaptiveMaxPool2d(1)
@@ -57,6 +59,7 @@ class VGG(nn.Module):
         if (self.matconvnet is not None):
             self.base.load_state_dict(torch.load(self.matconvnet))
             self.pretrained = True
+        pass
 
     def forward(self, x):
         x = self.base(x)

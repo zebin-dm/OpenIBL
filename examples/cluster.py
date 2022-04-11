@@ -26,7 +26,7 @@ from ibl.utils.serialization import load_checkpoint, copy_state_dict
 
 def get_data(args, nIm):
     root = osp.join(args.data_dir, args.dataset)
-    dataset = datasets.create(args.dataset, root, scale='30k')
+    dataset = datasets.create(args.dataset, root, scale='250k')
     cluster_set = list(set(dataset.q_train) | set(dataset.db_train))
 
     transformer = get_transformer_test(args.height, args.width)
@@ -39,7 +39,8 @@ def get_data(args, nIm):
     return dataset, cluster_loader
 
 def get_model(args):
-    model = models.create(args.arch, pretrained=True, cut_at_pooling=True, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
+    # model = models.create(args.arch, pretrained=True, cut_at_pooling=True, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
+    model = models.create(args.arch, bb_name=args.bb_name, conv_dim=args.conv_dim)
     model.cuda()
     model = nn.DataParallel(model)
     return model
@@ -81,7 +82,8 @@ def main_worker(args):
     if not osp.exists(osp.join(args.logs_dir)):
         os.makedirs(osp.join(args.logs_dir))
 
-    initcache = osp.join(args.logs_dir, args.arch + '_' + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
+    initcache = osp.join(args.logs_dir, args.arch + '_' + args.bb_name + '_' + args.dataset + \
+        '_' + str(args.conv_dim) + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
     with h5py.File(initcache, mode='w') as h5:
         with torch.no_grad():
             model.eval()
@@ -127,6 +129,8 @@ if __name__ == '__main__':
     parser.add_argument('--height', type=int, default=480, help="input height")
     parser.add_argument('--width', type=int, default=640, help="input width")
     parser.add_argument('--seed', type=int, default=43)
+    parser.add_argument('--bb_name', type=str, default="")
+    parser.add_argument('--conv_dim', type=int)
     parser.add_argument('--print-freq', type=int, default=10)
     # model
     parser.add_argument('-a', '--arch', type=str, default='vgg16',
@@ -135,7 +139,7 @@ if __name__ == '__main__':
     # path
     working_dir = osp.dirname(osp.abspath(__file__))
     parser.add_argument('--data-dir', type=str, metavar='PATH',
-                        default=osp.join(working_dir, 'data'))
+                        default="/data/zebin/data/Pittsburgh")
     parser.add_argument('--logs-dir', type=str, metavar='PATH',
                         default=osp.join(working_dir, '..', 'logs'))
     main()

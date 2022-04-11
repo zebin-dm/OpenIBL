@@ -2,10 +2,12 @@ from __future__ import absolute_import
 
 from .vgg import *
 from .netvlad import *
+from .prnet import PRNet
 
 
 __factory = {
     'vgg16': vgg16,
+    'prnet': PRNet,
     'netvlad': NetVLAD,
     'embednet': EmbedNet,
     'embednetpca': EmbedNetPCA,

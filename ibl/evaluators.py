@@ -33,7 +33,7 @@ def extract_cnn_feature(model, inputs, vlad=True, gpu=None):
         outputs = F.normalize(outputs, p=2, dim=-1)
     return outputs
 
-def extract_features(model, data_loader, dataset, print_freq=10,
+def extract_features(model, data_loader, dataset, print_freq=100,
                 vlad=True, pca=None, gpu=None, sync_gather=False):
     model.eval()
     batch_time = AverageMeter()
@@ -68,7 +68,7 @@ def extract_features(model, data_loader, dataset, print_freq=10,
                       'Data {:.3f} ({:.3f})\t'
                       .format(i + 1, len(data_loader),
                               batch_time.val, batch_time.avg,
-                              data_time.val, data_time.avg))
+                              data_time.val, data_time.avg), end="\r")
 
     if (pca is not None):
         del pca
@@ -92,8 +92,8 @@ def extract_features(model, data_loader, dataset, print_freq=10,
         features_dict = OrderedDict()
         for k in range(world_size):
             bc_features.data.copy_(torch.cat(features))
-            if (rank==0):
-                print("gathering features from rank no.{}".format(k))
+            # if (rank==0):
+            #     print("gathering features from rank no.{}".format(k))
             dist.broadcast(bc_features, k)
             l = bc_features.cpu().size(0)
             for fname, output in zip(dataset[k*l:(k+1)*l], bc_features.cpu()):
@@ -126,7 +126,8 @@ def pairwise_distance(features, query=None, gallery=None, metric=None):
         y = metric.transform(y)
     dist_m = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(m, n) + \
            torch.pow(y, 2).sum(dim=1, keepdim=True).expand(n, m).t()
-    dist_m.addmm_(1, -2, x, y.t())
+    # dist_m.addmm_(1, -2, x, y.t())
+    dist_m.addmm_(x, y.t(), beta=1, alpha=-2)
     return dist_m, x.numpy(), y.numpy()
 
 def spatial_nms(pred, db_ids, topN):
@@ -173,6 +174,7 @@ class Evaluator(object):
         self.model = model
         self.rank = dist.get_rank()
 
+    @torch.no_grad()
     def evaluate(self, query_loader, dataset, query, gallery, ground_truth, gallery_loader=None, \
                     vlad=True, pca=None, rerank=False, gpu=None, sync_gather=False, \
                     nms=False, rr_topk=25, lambda_value=0):

@@ -4,17 +4,10 @@ import os.path as osp
 import random
 import numpy as np
 import sys
-import h5py
-import scipy.io
-import copy
-
 import torch
 from torch import nn
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
-import torch.distributed as dist
-import torch.multiprocessing as mp
-import torch.utils.data.distributed as datadist
 
 from ibl import datasets
 from ibl import models
@@ -23,11 +16,13 @@ from ibl.evaluators import Evaluator, extract_features, pairwise_distance
 from ibl.utils.data import IterLoader, get_transformer_train, get_transformer_test
 from ibl.utils.data.sampler import DistributedRandomDiffTupleSampler, DistributedSliceSampler
 from ibl.utils.data.preprocessor import Preprocessor
-from ibl.utils.logging import Logger
-from ibl.pca import PCA
+from ibl.utils.logging import Logger, log_print
+# from ibl.pca import PCA
 from ibl.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
 from ibl.utils.dist_utils import init_dist, synchronize, convert_sync_bn
 from ibl.utils.rerank import re_ranking
+
+
 
 
 start_epoch = start_gen = best_recall5 = 0
@@ -71,10 +66,10 @@ def get_data(args, iters):
 
     return dataset, train_loader, val_loader, test_loader, sampler, train_extract_loader
 
+@torch.no_grad()
 def update_sampler(sampler, model, loader, query, gallery, sub_set, rerank=False,
                         vlad=True, gpu=None, sync_gather=False, lambda_value=0.1):
-    if (dist.get_rank()==0):
-        print ("===> Start extracting features for sorting gallery")
+    log_print("===> Start extracting features for sorting gallery")
     features = extract_features(model, loader, sorted(list(set(query) | set(gallery))),
                                 vlad=vlad, gpu=gpu, sync_gather=sync_gather)
     distmat, _, _ = pairwise_distance(features, query, gallery)
@@ -88,30 +83,27 @@ def update_sampler(sampler, model, loader, query, gallery, sub_set, rerank=False
     else:
         distmat_jac = distmat
     del features
-    if (dist.get_rank()==0):
-        print ("===> Start sorting gallery")
+    log_print("===> Start sorting gallery")
     sampler.sort_gallery(distmat, distmat_jac, sub_set)
     del distmat, distmat_jac
 
 def get_model(args):
-    base_model = models.create(args.arch, train_layers=args.layers, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
-    pool_layer = models.create('netvlad', dim=base_model.feature_dim)
-    initcache = osp.join(args.init_dir, args.arch + '_' + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
-    if (dist.get_rank()==0):
-        print ('Loading centroids from {}'.format(initcache))
-    with h5py.File(initcache, mode='r') as h5:
-        pool_layer.clsts = h5.get("centroids")[...]
-        pool_layer.traindescs = h5.get("descriptors")[...]
-        pool_layer._init_params()
+    # base_model = models.create(args.arch, train_layers=args.layers, matconvnet='logs/vd16_offtheshelf_conv5_3_max.pth')
+    base_model = models.create(args.arch, bb_name=args.bb_name, conv_dim=args.conv_dim)
+    # initcache = osp.join(args.init_dir, args.arch + '_' + args.bb_name + args.dataset + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
+    initcache = osp.join(args.init_dir, args.arch + '_' + args.bb_name + '_' + args.dataset + \
+        '_' + str(args.conv_dim) + '_' + str(args.num_clusters) + '_desc_cen.hdf5')
+    log_print('Loading centroids from {}'.format(initcache))
+    pool_layer = models.create('netvlad', dim=base_model.feature_dim, parafile=initcache)
+    pool_layer._init_params()
 
-    model = models.create('embedregionnet', base_model, pool_layer, tuple_size=args.tuple_size)
-
-    if (args.syncbn):
-        convert_sync_bn(model)
+    model = models.create('embedregionnet', base_model, pool_layer, tuple_size=args.tuple_size, reduce=args.reduce, reduce_dim=args.reduce_dim)
+    # if (args.syncbn):
+        # convert_sync_bn(model)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda(args.gpu)
     model = nn.parallel.DistributedDataParallel(
-                model, device_ids=[args.gpu], output_device=args.gpu, find_unused_parameters=True
-            )
+                model, device_ids=[args.gpu], output_device=args.gpu, find_unused_parameters=False)
     return model
 
 def main():
@@ -138,8 +130,8 @@ def main_worker(args):
 
     if (args.rank==0):
         sys.stdout = Logger(osp.join(args.logs_dir, 'log.txt'))
-        print("==========\nArgs:{}\n==========".format(args))
-
+    log_print("==========\nArgs:{}\n==========".format(args))
+    
     # Create data loaders
     iters = args.iters if (args.iters>0) else None
     dataset, train_loader, val_loader, test_loader, sampler, train_extract_loader = get_data(args, iters)
@@ -155,15 +147,13 @@ def main_worker(args):
         start_epoch = checkpoint['epoch']+1
         start_gen = checkpoint['generation']
         best_recall5 = checkpoint['best_recall5']
-        if (args.rank==0):
-            print("=> Start epoch {}  best recall5 {:.1%}"
+        log_print("=> Start epoch {}  best recall5 {:.1%}"
                   .format(start_epoch, best_recall5))
 
     # Evaluator
     evaluator = Evaluator(model)
 
-    if (args.rank==0):
-        print("Test the initial model:")
+    log_print("Test the initial model:")
     recalls = evaluator.evaluate(val_loader, sorted(list(set(dataset.q_val) | set(dataset.db_val))),
                         dataset.q_val, dataset.db_val, dataset.val_pos,
                         vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
@@ -173,8 +163,10 @@ def main_worker(args):
                                     neg_num=args.neg_num, gpu=args.gpu, temp=args.temperature)
     if ((args.cache_size<args.tuple_size) or (args.cache_size>len(dataset.q_train))):
         args.cache_size = len(dataset.q_train)
-
+    
+    log_print("start_gen: {}, args.generations: {}".format(start_gen, args.generations))
     for gen in range(start_gen, args.generations):
+        log_print("######################## gen: {}".format(gen))
         # Update model cache and init model
         model_cache.load_state_dict(model.state_dict())
         model.module._init_params()
@@ -196,18 +188,24 @@ def main_worker(args):
             g = torch.Generator()
             g.manual_seed(args.seed+epoch)
             subset_indices = torch.randperm(len(dataset.q_train), generator=g).long().split(args.cache_size)
-
             for subid, subset in enumerate(subset_indices):
-                update_sampler(sampler, model, train_extract_loader, dataset.q_train, dataset.db_train, subset.tolist(),
-                                rerank=(gen>0), vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
+                optimizer.zero_grad()
+                torch.cuda.empty_cache()
                 synchronize()
-
+                update_sampler(sampler, model, train_extract_loader, dataset.q_train, dataset.db_train, subset.tolist(),
+                                rerank=(False), vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
+                torch.cuda.empty_cache()
+                synchronize()
+                log_print("train, epoch: {}, subid:{}/{} \r\n".format(epoch, subid, len(subset_indices)))
                 trainer.train(gen, epoch, subid, train_loader, optimizer,
                                 train_iters=len(train_loader), print_freq=args.print_freq,
                                 lambda_soft=(args.soft_weight if gen>0 else 0), loss_type=args.loss_type)
+                log_print("")
                 synchronize()
-
             if ((epoch+1)%args.eval_step==0 or (epoch==args.epochs-1)):
+                optimizer.zero_grad()
+                torch.cuda.empty_cache()
+                synchronize()
                 recalls = evaluator.evaluate(val_loader, sorted(list(set(dataset.q_val) | set(dataset.db_val))),
                                         dataset.q_val, dataset.db_val, dataset.val_pos,
                                         vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
@@ -217,7 +215,7 @@ def main_worker(args):
 
                 if (args.rank==0):
                     save_checkpoint({
-                        'state_dict': model.state_dict(),
+                        'state_dict': model.module.state_dict(),
                         'epoch': epoch,
                         'generation': gen,
                         'best_recall5': best_recall5,
@@ -230,29 +228,27 @@ def main_worker(args):
 
         start_epoch = 0
 
-    # final inference
-    if (args.rank==0):
-        print("Performing PCA reduction on the best model:")
-    model.load_state_dict(load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))['state_dict'])
-    pca_parameters_path = osp.join(args.logs_dir, 'pca_params_model_best.h5')
-    pca = PCA(args.features, (not args.nowhiten), pca_parameters_path)
-    dict_f = extract_features(model, train_extract_loader, sorted(list(set(dataset.q_train) | set(dataset.db_train))),
-                                vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
-    features = list(dict_f.values())
-    if (len(features)>10000):
-        features = random.sample(features, 10000)
-    features = torch.stack(features)
-    if (args.rank==0):
-        pca.train(features)
-    synchronize()
-    del features
-    if (args.rank==0):
-        print("Testing on Pitts30k-test:")
-    evaluator.evaluate(test_loader, sorted(list(set(dataset.q_test) | set(dataset.db_test))),
-                dataset.q_test, dataset.db_test, dataset.test_pos,
-                vlad=True, pca=pca, gpu=args.gpu, sync_gather=args.sync_gather)
-    synchronize()
-    return
+    # # final inference
+    # log_print("Performing PCA reduction on the best model:")
+    # model.load_state_dict(load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))['state_dict'])
+    # # pca_parameters_path = osp.join(args.logs_dir, 'pca_params_model_best.h5')
+    # # pca = PCA(args.features, (not args.nowhiten), pca_parameters_path)
+    # dict_f = extract_features(model, train_extract_loader, sorted(list(set(dataset.q_train) | set(dataset.db_train))),
+    #                             vlad=True, gpu=args.gpu, sync_gather=args.sync_gather)
+    # features = list(dict_f.values())
+    # if (len(features)>10000):
+    #     features = random.sample(features, 10000)
+    # features = torch.stack(features)
+    # # if (args.rank==0):
+    # #     pca.train(features)
+    # synchronize()
+    # del features
+    # log_print("Testing on Pitts30k-test:")
+    # evaluator.evaluate(test_loader, sorted(list(set(dataset.q_test) | set(dataset.db_test))),
+    #             dataset.q_test, dataset.db_test, dataset.test_pos,
+    #             vlad=True, pca=pca, gpu=args.gpu, sync_gather=args.sync_gather)
+    # synchronize()
+    # return
 
 
 if __name__ == '__main__':
@@ -264,7 +260,7 @@ if __name__ == '__main__':
     # data
     parser.add_argument('-d', '--dataset', type=str, default='pitts',
                         choices=datasets.names())
-    parser.add_argument('--scale', type=str, default='30k')
+    parser.add_argument('--scale', type=str, default='250k')
     parser.add_argument('--tuple-size', type=int, default=1,
                         help="tuple numbers in a batch")
     parser.add_argument('--test-batch-size', type=int, default=64,
@@ -282,6 +278,10 @@ if __name__ == '__main__':
     # model
     parser.add_argument('-a', '--arch', type=str, default='vgg16',
                         choices=models.names())
+    parser.add_argument('--bb_name', type=str, default="")
+    parser.add_argument('--conv_dim', type=int, default=128)
+    parser.add_argument('--reduce_dim', type=int, default=4096)
+    parser.add_argument('--reduce', type=bool, default=True)
     parser.add_argument('--layers', type=str, default='conv5')
     parser.add_argument('--nowhiten', action='store_true')
     parser.add_argument('--syncbn', action='store_true')
@@ -296,20 +296,20 @@ if __name__ == '__main__':
     # training configs
     parser.add_argument('--resume', type=str, default='', metavar='PATH')
     parser.add_argument('--eval-step', type=int, default=1)
-    parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--generations', type=int, default=4)
+    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--generations', type=int, default=20)
     parser.add_argument('--loss-type', type=str, default='sare_ind')
     parser.add_argument('--temperature', nargs='+', type=float, default=[0.07,0.07,0.06,0.05])
     parser.add_argument('--soft-weight', type=float, default=0.5)
     parser.add_argument('--iters', type=int, default=0)
     parser.add_argument('--seed', type=int, default=43)
     parser.add_argument('--deterministic', action='store_true')
-    parser.add_argument('--print-freq', type=int, default=10)
+    parser.add_argument('--print-freq', type=int, default=50)
     parser.add_argument('--margin', type=float, default=0.1, help='margin for the triplet loss with batch hard')
     # path
     working_dir = osp.dirname(osp.abspath(__file__))
     parser.add_argument('--data-dir', type=str, metavar='PATH',
-                        default=osp.join(working_dir, 'data'))
+                        default="/data/zebin/data/Pittsburgh")
     parser.add_argument('--logs-dir', type=str, metavar='PATH',
                         default=osp.join(working_dir, 'logs'))
     parser.add_argument('--init-dir', type=str, metavar='PATH',

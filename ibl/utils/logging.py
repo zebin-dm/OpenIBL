@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 import os
 import sys
-
+import torch.distributed as dist
 from .osutils import mkdir_if_missing
 
 
@@ -37,3 +37,9 @@ class Logger(object):
         self.console.close()
         if self.file is not None:
             self.file.close()
+
+
+def log_print(*args, **kwargs):
+    if (dist.is_initialized()):
+        if (dist.get_rank()==0):
+            print(*args, **kwargs)
