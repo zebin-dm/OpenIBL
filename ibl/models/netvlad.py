@@ -6,6 +6,7 @@ import numpy as np
 import copy
 import h5py
 
+
 class NetVLAD(nn.Module):
     """NetVLAD layer implementation"""
 
@@ -26,23 +27,26 @@ class NetVLAD(nn.Module):
         self.dim = dim
         self.alpha = alpha
         self.normalize_input = normalize_input
-        self.conv = nn.Conv2d(dim, num_clusters, kernel_size=(1, 1), bias=False)
-        self.centroids = nn.Parameter(torch.rand(num_clusters, dim), requires_grad=True)
+        self.conv = nn.Conv2d(
+            dim, num_clusters, kernel_size=(1, 1), bias=False)
+        self.centroids = nn.Parameter(torch.rand(
+            num_clusters, dim), requires_grad=True)
         self.parafile = parafile
 
     def _init_params(self):
-        
+
         with h5py.File(self.parafile, mode='r') as h5:
             clsts = h5.get("centroids")[...]
             traindescs = h5.get("descriptors")[...]
         clstsAssign = clsts / np.linalg.norm(clsts, axis=1, keepdims=True)
         dots = np.dot(clstsAssign, traindescs.T)
         dots.sort(0)
-        dots = dots[::-1, :] # sort, descending
+        dots = dots[::-1, :]  # sort, descending
 
-        self.alpha = (-np.log(0.01) / np.mean(dots[0,:] - dots[1,:])).item()
+        self.alpha = (-np.log(0.01) / np.mean(dots[0, :] - dots[1, :])).item()
         self.centroids.data.copy_(torch.from_numpy(clsts))
-        self.conv.weight.data.copy_(torch.from_numpy(self.alpha*clstsAssign).unsqueeze(2).unsqueeze(3))
+        self.conv.weight.data.copy_(torch.from_numpy(
+            self.alpha*clstsAssign).unsqueeze(2).unsqueeze(3))
 
     def forward(self, x):
         N, C = x.shape[:2]
@@ -57,11 +61,13 @@ class NetVLAD(nn.Module):
 
         # calculate residuals to each clusters in one loop
         residual = x_flatten.expand(self.num_clusters, -1, -1, -1).permute(1, 0, 2, 3) - \
-            self.centroids.expand(x_flatten.size(-1), -1, -1).permute(1, 2, 0).unsqueeze(0)
+            self.centroids.expand(x_flatten.size(-1), -
+                                  1, -1).permute(1, 2, 0).unsqueeze(0)
         residual *= soft_assign.unsqueeze(2)
         vlad = residual.sum(dim=-1)
 
         return vlad
+
 
 class EmbedNet(nn.Module):
     def __init__(self, base_model, net_vlad):
@@ -86,12 +92,14 @@ class EmbedNet(nn.Module):
         # return pool_x, vlad_x
         return None, vlad_x
 
+
 class EmbedNetPCA(nn.Module):
     def __init__(self, base_model, net_vlad, dim=4096):
         super(EmbedNetPCA, self).__init__()
         self.base_model = base_model
         self.net_vlad = net_vlad
-        self.pca_layer = nn.Conv2d(net_vlad.num_clusters*net_vlad.dim, dim, 1, stride=1, padding=0)
+        self.pca_layer = nn.Conv2d(
+            net_vlad.num_clusters*net_vlad.dim, dim, 1, stride=1, padding=0)
 
     def _init_params(self):
         self.base_model._init_params()
@@ -130,13 +138,12 @@ def weights_init_kaiming(m):
         nn.init.zeros_(m.bias)
 
 
-
 class ReductionNet(nn.Module):
     def __init__(self, in_dim, out_dim=4096):
         super().__init__()
         self.reduction = nn.Linear(in_dim, out_dim)
         weights_init_kaiming(self.reduction)
-    
+
     def forward(self, x):
         descriptor = self.reduction(x)
         descriptor = F.normalize(descriptor, dim=1)
@@ -151,13 +158,13 @@ class EmbedRegionNet(nn.Module):
         self.tuple_size = tuple_size
         self.reduce_ = reduce
         if self.reduce_:
-            self.reduce_net = ReductionNet(in_dim=base_model.feature_dim*net_vlad.num_clusters, out_dim=reduce_dim)
-        
+            self.reduce_net = ReductionNet(
+                in_dim=base_model.feature_dim*net_vlad.num_clusters, out_dim=reduce_dim)
 
     def _init_params(self):
-        self.base_model._init_params()
+        # self.base_model._init_params()
         self.net_vlad._init_params()
-    
+
     def load_state(self, pth_file):
         state_dict = torch.load(pth_file, map_location=torch.device("cpu"))
         self.load_state_dict(state_dict=state_dict)
@@ -170,7 +177,7 @@ class EmbedRegionNet(nn.Module):
             # re-arrange local features for aggregating quarter regions
             N, C, H, W = x.size()
             x = x.view(N, C, 2, int(H/2), 2, int(W/2))
-            x = x.permute(0,1,2,4,3,5).contiguous()
+            x = x.permute(0, 1, 2, 4, 3, 5).contiguous()
             x = x.view(N, C, -1, int(H/2), int(W/2))
             return x
 
@@ -182,11 +189,11 @@ class EmbedRegionNet(nn.Module):
         # compute quarter-region features
         def aggregate_quarter(x):
             N, C, B, H, W = x.size()
-            x = x.permute(0,2,1,3,4).contiguous()
-            x = x.view(-1,C,H,W)
-            vlad_x = self.net_vlad(x) # (N*B)*64*512
+            x = x.permute(0, 2, 1, 3, 4).contiguous()
+            x = x.view(-1, C, H, W)
+            vlad_x = self.net_vlad(x)  # (N*B)*64*512
             _, cluster_num, feat_dim = vlad_x.size()
-            vlad_x = vlad_x.view(N,B,cluster_num,feat_dim)
+            vlad_x = vlad_x.view(N, B, cluster_num, feat_dim)
             return vlad_x
 
         vlad_A_quarter = aggregate_quarter(feature_A)
@@ -196,8 +203,8 @@ class EmbedRegionNet(nn.Module):
 
         # compute half-region features
         def quarter_to_half(vlad_x):
-            return torch.stack((vlad_x[:,0]+vlad_x[:,1], vlad_x[:,2]+vlad_x[:,3], \
-                                vlad_x[:,0]+vlad_x[:,2], vlad_x[:,1]+vlad_x[:,3]), dim=1).contiguous()
+            return torch.stack((vlad_x[:, 0]+vlad_x[:, 1], vlad_x[:, 2]+vlad_x[:, 3],
+                                vlad_x[:, 0]+vlad_x[:, 2], vlad_x[:, 1]+vlad_x[:, 3]), dim=1).contiguous()
 
         vlad_A_half = quarter_to_half(vlad_A_quarter)
         vlad_B_half = quarter_to_half(vlad_B_quarter)
@@ -234,14 +241,14 @@ class EmbedRegionNet(nn.Module):
         # vlad_B: NPN*9*(64*512)
 
         _, B, L = vlad_B.size()
-        vlad_A = vlad_A.view(self.tuple_size,-1,B,L)
-        vlad_B = vlad_B.view(self.tuple_size,-1,B,L)
+        vlad_A = vlad_A.view(self.tuple_size, -1, B, L)
+        vlad_B = vlad_B.view(self.tuple_size, -1, B, L)
         # vlad_A: N*1*9*(64x512)
         # vlad_B: N*(P+N)*9*(64*512)
 
-
-        score = torch.bmm(vlad_A.expand_as(vlad_B).view(-1,B,L), vlad_B.view(-1,B,L).transpose(1,2))
-        score = score.view(self.tuple_size,-1,B,B)
+        score = torch.bmm(vlad_A.expand_as(vlad_B).view(-1, B, L),
+                          vlad_B.view(-1, B, L).transpose(1, 2))
+        score = score.view(self.tuple_size, -1, B, B)
 
         return score, vlad_A, vlad_B
 
@@ -249,8 +256,9 @@ class EmbedRegionNet(nn.Module):
         B, C, H, W = x.size()
         x = x.view(self.tuple_size, -1, C, H, W)
 
-        anchors = x[:, 0].unsqueeze(1).contiguous().view(-1,C,H,W) # B*C*H*W
-        pairs = x[:, 1:].view(-1,C,H,W) # (B*(1+neg_num))*C*H*W
+        anchors = x[:, 0].unsqueeze(
+            1).contiguous().view(-1, C, H, W)  # B*C*H*W
+        pairs = x[:, 1:].view(-1, C, H, W)  # (B*(1+neg_num))*C*H*W
 
         return self._compute_region_sim(anchors, pairs)
 
@@ -268,5 +276,3 @@ class EmbedRegionNet(nn.Module):
             return vlad_x
 
         return self._forward_train(x)
-    
-

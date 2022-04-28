@@ -5,7 +5,7 @@ export TORCH_HOME="${root_path}/pretrain"
 export PYTHONPATH=/data/zebin/OpenIBL:$PYTHONPATH
 ARCH=prnet
 BB_NAME=vgg16
-conv_dim=256
+conv_dim=512
 
 # if [ $# -ne 1 ]
 #   then

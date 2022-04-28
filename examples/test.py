@@ -31,29 +31,35 @@ def get_data(args):
     dataset = datasets.create(args.dataset, root, scale=args.scale)
 
     test_transformer_db = get_transformer_test(args.height, args.width)
-    test_transformer_q = get_transformer_test(args.height, args.width, tokyo=(args.dataset=='tokyo'))
+    test_transformer_q = get_transformer_test(
+        args.height, args.width, tokyo=(args.dataset == 'tokyo'))
 
-    pitts = datasets.create('pitts', osp.join(args.data_dir, 'pitts'), scale='30k', verbose=False)
+    pitts = datasets.create('pitts', osp.join(
+        args.data_dir, 'pitts'), scale='30k', verbose=False)
     pitts_train = sorted(list(set(pitts.q_train) | set(pitts.db_train)))
     train_extract_loader = DataLoader(
-        Preprocessor(pitts_train, root=pitts.images_dir, transform=test_transformer_db),
+        Preprocessor(pitts_train, root=pitts.images_dir,
+                     transform=test_transformer_db),
         batch_size=args.test_batch_size, num_workers=args.workers,
         sampler=DistributedSliceSampler(pitts_train),
         shuffle=False, pin_memory=True)
 
     test_loader_q = DataLoader(
-        Preprocessor(dataset.q_test, root=dataset.images_dir, transform=test_transformer_q),
-        batch_size=(1 if args.dataset=='tokyo' else args.test_batch_size), num_workers=args.workers,
+        Preprocessor(dataset.q_test, root=dataset.images_dir,
+                     transform=test_transformer_q),
+        batch_size=(1 if args.dataset == 'tokyo' else args.test_batch_size), num_workers=args.workers,
         sampler=DistributedSliceSampler(dataset.q_test),
         shuffle=False, pin_memory=True)
 
     test_loader_db = DataLoader(
-        Preprocessor(dataset.db_test, root=dataset.images_dir, transform=test_transformer_db),
+        Preprocessor(dataset.db_test, root=dataset.images_dir,
+                     transform=test_transformer_db),
         batch_size=args.test_batch_size, num_workers=args.workers,
         sampler=DistributedSliceSampler(dataset.db_test),
         shuffle=False, pin_memory=True)
 
     return dataset, pitts_train, train_extract_loader, test_loader_q, test_loader_db
+
 
 def get_model(args):
     base_model = models.create(args.arch)
@@ -65,14 +71,17 @@ def get_model(args):
 
     model.cuda(args.gpu)
     model = nn.parallel.DistributedDataParallel(
-                model, device_ids=[args.gpu], output_device=args.gpu, find_unused_parameters=True
-            )
+        model, device_ids=[
+            args.gpu], output_device=args.gpu, find_unused_parameters=True
+    )
     return model
+
 
 def main():
     args = parser.parse_args()
 
     main_worker(args)
+
 
 def main_worker(args):
     init_dist(args.launcher, args)
@@ -82,13 +91,14 @@ def main_worker(args):
           .format(args.gpu, args.rank, args.world_size))
 
     assert(args.resume)
-    if (args.rank==0):
+    if (args.rank == 0):
         log_dir = osp.dirname(args.resume)
         sys.stdout = Logger(osp.join(log_dir, 'log_test_'+args.dataset+'.txt'))
         print("==========\nArgs:{}\n==========".format(args))
 
     # Create data loaders
-    dataset, pitts_train, train_extract_loader, test_loader_q, test_loader_db = get_data(args)
+    dataset, pitts_train, train_extract_loader, test_loader_q, test_loader_db = get_data(
+        args)
 
     # Create model
     model = get_model(args)
@@ -99,41 +109,44 @@ def main_worker(args):
         copy_state_dict(checkpoint['state_dict'], model)
         start_epoch = checkpoint['epoch']
         best_recall5 = checkpoint['best_recall5']
-        if (args.rank==0):
+        if (args.rank == 0):
             print("=> Start epoch {}  best recall5 {:.1%}"
                   .format(start_epoch, best_recall5))
 
     # Evaluator
     evaluator = Evaluator(model)
     if (args.reduction):
-        pca_parameters_path = osp.join(osp.dirname(args.resume), 'pca_params_'+osp.basename(args.resume).split('.')[0]+'.h5')
+        pca_parameters_path = osp.join(osp.dirname(
+            args.resume), 'pca_params_'+osp.basename(args.resume).split('.')[0]+'.h5')
         pca = PCA(args.features, (not args.nowhiten), pca_parameters_path)
         if (not osp.isfile(pca_parameters_path)):
             dict_f = extract_features(model, train_extract_loader, pitts_train,
-                    vlad=args.vlad, gpu=args.gpu, sync_gather=args.sync_gather)
+                                      vlad=args.vlad, gpu=args.gpu, sync_gather=args.sync_gather)
             features = list(dict_f.values())
-            if (len(features)>10000):
+            if (len(features) > 10000):
                 features = random.sample(features, 10000)
             features = torch.stack(features)
-            if (args.rank==0):
+            if (args.rank == 0):
                 pca.train(features)
             synchronize()
             del features
     else:
         pca = None
 
-    if (args.rank==0):
+    if (args.rank == 0):
         print("Evaluate on the test set:")
     evaluator.evaluate(test_loader_q, sorted(list(set(dataset.q_test) | set(dataset.db_test))),
-                        dataset.q_test, dataset.db_test, dataset.test_pos, gallery_loader=test_loader_db,
-                        vlad=args.vlad, pca=pca, rerank=args.rerank, gpu=args.gpu, sync_gather=args.sync_gather,
-                        nms=(True if args.dataset=='tokyo' else False),
-                        rr_topk=args.rr_topk, lambda_value=args.lambda_value)
+                       dataset.q_test, dataset.db_test, dataset.test_pos, gallery_loader=test_loader_db,
+                       vlad=args.vlad, pca=pca, rerank=args.rerank, gpu=args.gpu, sync_gather=args.sync_gather,
+                       nms=(True if args.dataset == 'tokyo' else False),
+                       rr_topk=args.rr_topk, lambda_value=args.lambda_value)
     synchronize()
     return
 
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Image-based localization testing")
+    parser = argparse.ArgumentParser(
+        description="Image-based localization testing")
     parser.add_argument('--launcher', type=str,
                         choices=['none', 'pytorch', 'slurm'],
                         default='none', help='job launcher')

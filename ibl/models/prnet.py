@@ -1,5 +1,7 @@
 import math
+import torch
 import torch.nn as nn
+from loguru import logger
 from torchvision.models import convnext_tiny, efficientnet_b0, regnet_y_800mf
 # from ibl.models.vgg import vgg16
 import torchvision.models.vgg as tv_vgg
@@ -28,7 +30,7 @@ class RegnetDM(nn.Module):
         self.stem = ins.stem
         self.feat = ins.trunk_output[:3]
         print("self.feat layers: {}".format(len(self.feat)))
-    
+
     def forward(self, x):
         out = self.stem(x)
         out = self.feat(out)
@@ -51,14 +53,17 @@ class Vgg(nn.Module):
             conv_layers = list(ins.features.children())[:-2]
             self.last_dim = last_dim
             self.fix_layer_num = 24
-            conv_layers[-1] = nn.Conv2d(512, last_dim, kernel_size=3, padding=1)
-            weights_init_kaiming(conv_layers[-1])
+            if last_dim != 512:
+                conv_layers[-1] = nn.Conv2d(512,
+                                            last_dim, kernel_size=3, padding=1)
+                weights_init_kaiming(conv_layers[-1])
         elif bb_name == "vgg16_bn":
             ins = tv_vgg.vgg16_bn(pretrained=True)
             conv_layers = list(ins.features.children())[:-2]
             self.last_dim = last_dim
             self.fix_layer_num = 34
-            conv_layers[-1] = nn.Conv2d(512, last_dim, kernel_size=3, padding=1)
+            conv_layers[-1] = nn.Conv2d(512, last_dim,
+                                        kernel_size=3, padding=1)
             weights_init_kaiming(conv_layers[-1])
         self.features = nn.Sequential(*conv_layers)
         self.fix_parameter(self.fix_layer_num)
@@ -68,7 +73,7 @@ class Vgg(nn.Module):
         for l in layers[:layer_num]:
             for p in l.parameters():
                 p.requires_grad = False
-                
+
     def forward(self, x):
         out = self.features(x)
         return out
@@ -85,44 +90,41 @@ class PRNet(nn.Module):
             self.feature_dim = 112
         elif bb_name == "convnext_tiny":
             self.base_model = convnext_tiny().features[:6]
-            self.feature_dim =384
-            
+            self.feature_dim = 384
+
             for l in self.base_model[:4]:
                 for p in l.parameters():
                     p.requires_grad = False
         elif bb_name == "regnet_y_800mf":
             self.base_model = RegnetDM(name=bb_name)
-            self.feature_dim =320
+            self.feature_dim = 320
         elif bb_name == "vgg16" or bb_name == "vgg16_bn":
             self.base_model = Vgg(bb_name=bb_name, last_dim=conv_dim)
             self.feature_dim = self.base_model.last_dim
         # self.base_model.apply(FixBatchNorm)
-    
-    def _init_params(self):
-        # optional load pretrained weights from matconvnet
-        if self.bb_name == "convnext_tiny":
-            # self.base_model = convnext_tiny().features[:6]
-            # self.feature_dim =384
-            # for l in self.base_model[:4]:
-            #     for p in l.parameters():
-            #         p.requires_grad = False
-            pass
-            
+
+    def _init_params(self, key=None, pth_file=None):
+        if pth_file is None or key is None:
+            return
+
+        if key == "vgg16":
+            logger.info("model: {}, load pretrain: {}".format(key, pth_file))
+            self.base_model.features.load_state_dict(torch.load(pth_file))
+
     def forward(self, x):
         # if self.bb_name == "vgg16":
         #     _, x = self.base_model(x)
         # else:
         x = self.base_model(x)
         return x
-    
+
+
 if __name__ == "__main__":
     import torch
     device = torch.device("cuda:5")
-    in_size=[1, 3, 480, 640]
+    in_size = [1, 3, 480, 640]
     data = torch.randn(*in_size).to(device)
     net = Vgg(bb_name="vgg16_bn")
     net.to(device)
     out = net(data)
     print(out.shape)
-    
-    

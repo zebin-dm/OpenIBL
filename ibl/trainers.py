@@ -8,6 +8,7 @@ import torch.distributed as dist
 from ibl.models.prnet import FixBatchNorm
 from .utils.meters import AverageMeter
 
+
 class Trainer(object):
     #############################
     # Training module for
@@ -22,7 +23,7 @@ class Trainer(object):
         self.temp = temp
 
     def train(self, epoch, sub_id, data_loader, optimizer, train_iters,
-                        print_freq=1, vlad=True, loss_type='triplet'):
+              print_freq=1, vlad=True, loss_type='triplet'):
         self.model.train()
         # self.model.apply(FixBatchNorm)
         batch_time = AverageMeter()
@@ -50,7 +51,7 @@ class Trainer(object):
                 rank = dist.get_rank()
             except:
                 rank = 0
-            if ((i + 1) % print_freq == 0 and rank==0):
+            if ((i + 1) % print_freq == 0 and rank == 0):
                 print('Epoch: [{}-{}][{}/{}]\t'
                       'Time {:.3f} ({:.3f})\t'
                       'Data {:.3f} ({:.3f})\t'
@@ -60,10 +61,9 @@ class Trainer(object):
                               data_time.val, data_time.avg,
                               losses.val, losses.avg))
 
-
     def _parse_data(self, inputs):
         imgs = [input[0] for input in inputs]
-        imgs = torch.stack(imgs).permute(1,0,2,3,4)
+        imgs = torch.stack(imgs).permute(1, 0, 2, 3, 4)
         # imgs_size: batch_size*triplet_size*C*H*W
         return imgs.cuda(self.gpu)
 
@@ -87,74 +87,83 @@ class Trainer(object):
         output_anchors = outputs[:, 0]
         output_positives = outputs[:, 1]
 
-        if (loss_type=='triplet'):
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
-            output_positives = output_positives.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+        if (loss_type == 'triplet'):
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
+            output_positives = output_positives.unsqueeze(
+                1).expand_as(output_negatives).contiguous().view(-1, L)
             output_negatives = output_negatives.contiguous().view(-1, L)
             loss = F.triplet_margin_loss(output_anchors, output_positives, output_negatives,
-                                            margin=self.margin, p=2, reduction='mean')
+                                         margin=self.margin, p=2, reduction='mean')
 
-        elif (loss_type=='sare_joint'):
-            ### original version: euclidean distance
-            dist_pos = ((output_anchors - output_positives)**2).sum(1)
-            dist_pos = dist_pos.view(B, 1)
-
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
-            output_negatives = output_negatives.contiguous().view(-1, L)
-            dist_neg = ((output_anchors - output_negatives)**2).sum(1)
-            dist_neg = dist_neg.view(B, -1)
-
-            dist = - torch.cat((dist_pos, dist_neg), 1)
-            dist = F.log_softmax(dist, 1)
-            loss = (- dist[:, 0]).mean()
-
-            ### new version: dot product
-            # dist_pos = torch.mm(output_anchors, output_positives.transpose(0,1)) # B*B
-            # dist_pos = dist_pos.diagonal(0)
+        elif (loss_type == 'sare_joint'):
+            # original version: euclidean distance
+            # dist_pos = ((output_anchors - output_positives)**2).sum(1)
             # dist_pos = dist_pos.view(B, 1)
-            #
-            # output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+
+            # output_anchors = output_anchors.unsqueeze(1).expand_as(
+            #     output_negatives).contiguous().view(-1, L)
             # output_negatives = output_negatives.contiguous().view(-1, L)
-            # dist_neg = torch.mm(output_anchors, output_negatives.transpose(0,1)) # B*B
-            # dist_neg = dist_neg.diagonal(0)
+            # dist_neg = ((output_anchors - output_negatives)**2).sum(1)
             # dist_neg = dist_neg.view(B, -1)
-            #
-            # dist = torch.cat((dist_pos, dist_neg), 1)/self.temp
+
+            # dist = - torch.cat((dist_pos, dist_neg), 1)
             # dist = F.log_softmax(dist, 1)
             # loss = (- dist[:, 0]).mean()
 
-        elif (loss_type=='sare_ind'):
-            ### original version: euclidean distance
-            dist_pos = ((output_anchors - output_positives)**2).sum(1)
+            # new version: dot product
+            dist_pos = torch.mm(
+                output_anchors, output_positives.transpose(0, 1))  # B*B
+            dist_pos = dist_pos.diagonal(0)
             dist_pos = dist_pos.view(B, 1)
 
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
             output_negatives = output_negatives.contiguous().view(-1, L)
-            dist_neg = ((output_anchors - output_negatives)**2).sum(1)
+            dist_neg = torch.mm(
+                output_anchors, output_negatives.transpose(0, 1))  # B*B
+            dist_neg = dist_neg.diagonal(0)
+            dist_neg = dist_neg.view(B, -1)
+
+            dist = torch.cat((dist_pos, dist_neg), 1)/self.temp
+            dist = F.log_softmax(dist, 1)
+            loss = (- dist[:, 0]).mean()
+
+        elif (loss_type == 'sare_ind'):
+            # original version: euclidean distance
+            # dist_pos = ((output_anchors - output_positives)**2).sum(1)
+            # dist_pos = dist_pos.view(B, 1)
+
+            # output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+            # output_negatives = output_negatives.contiguous().view(-1, L)
+            # dist_neg = ((output_anchors - output_negatives)**2).sum(1)
+            # dist_neg = dist_neg.view(B, -1)
+
+            # dist_neg = dist_neg.unsqueeze(2)
+            # dist_pos = dist_pos.view(B, 1, 1).expand_as(dist_neg)
+            # dist = - torch.cat((dist_pos, dist_neg), 2).view(-1, 2)
+            # dist = F.log_softmax(dist, 1)
+            # loss = (- dist[:, 0]).mean()
+
+            # new version: dot product
+            dist_pos = torch.mm(
+                output_anchors, output_positives.transpose(0, 1))  # B*B
+            dist_pos = dist_pos.diagonal(0)
+            dist_pos = dist_pos.view(B, 1)
+
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
+            output_negatives = output_negatives.contiguous().view(-1, L)
+            dist_neg = torch.mm(
+                output_anchors, output_negatives.transpose(0, 1))  # B*B
+            dist_neg = dist_neg.diagonal(0)
             dist_neg = dist_neg.view(B, -1)
 
             dist_neg = dist_neg.unsqueeze(2)
             dist_pos = dist_pos.view(B, 1, 1).expand_as(dist_neg)
-            dist = - torch.cat((dist_pos, dist_neg), 2).view(-1, 2)
+            dist = torch.cat((dist_pos, dist_neg), 2).view(-1, 2)/self.temp
             dist = F.log_softmax(dist, 1)
             loss = (- dist[:, 0]).mean()
-
-            ### new version: dot product
-            # dist_pos = torch.mm(output_anchors, output_positives.transpose(0,1)) # B*B
-            # dist_pos = dist_pos.diagonal(0)
-            # dist_pos = dist_pos.view(B, 1)
-            #
-            # output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
-            # output_negatives = output_negatives.contiguous().view(-1, L)
-            # dist_neg = torch.mm(output_anchors, output_negatives.transpose(0,1)) # B*B
-            # dist_neg = dist_neg.diagonal(0)
-            # dist_neg = dist_neg.view(B, -1)
-            #
-            # dist_neg = dist_neg.unsqueeze(2)
-            # dist_pos = dist_pos.view(B, 1, 1).expand_as(dist_neg)
-            # dist = torch.cat((dist_pos, dist_neg), 2).view(-1, 2)/self.temp
-            # dist = F.log_softmax(dist, 1)
-            # loss = (- dist[:, 0]).mean()
 
         else:
             assert ("Unknown loss function")
@@ -168,7 +177,7 @@ class SFRSTrainer(object):
     # "Self-supervising Fine-grained Region Similarities for Large-scale Image Localization"
     #############################
     def __init__(self, model, model_cache, margin=0.3,
-                    neg_num=10, gpu=None, temp=[0.07,]):
+                 neg_num=10, gpu=None, temp=[0.07, ]):
         super(SFRSTrainer, self).__init__()
         self.model = model
         self.model_cache = model_cache
@@ -179,7 +188,7 @@ class SFRSTrainer(object):
         self.temp = temp
 
     def train(self, gen, epoch, sub_id, data_loader, optimizer, train_iters,
-                    print_freq=1, lambda_soft=0.5, loss_type='sare_ind'):
+              print_freq=1, lambda_soft=0.5, loss_type='sare_ind'):
         self.model.train()
         self.model_cache.train()
 
@@ -196,7 +205,8 @@ class SFRSTrainer(object):
             inputs_easy, inputs_diff = self._parse_data(data_loader.next())
             data_time.update(time.time() - end)
 
-            loss_hard, loss_soft = self._forward(inputs_easy, inputs_diff, loss_type, gen)
+            loss_hard, loss_soft = self._forward(
+                inputs_easy, inputs_diff, loss_type, gen)
             loss = loss_hard + loss_soft*lambda_soft
 
             optimizer.zero_grad()
@@ -213,7 +223,7 @@ class SFRSTrainer(object):
                 rank = dist.get_rank()
             except:
                 rank = 0
-            if ((i + 1) % print_freq == 0 and rank==0):
+            if ((i + 1) % print_freq == 0 and rank == 0):
                 print('Epoch: [{}-{}][{}/{}]\t'
                       'Time {:.3f} ({:.3f})\t'
                       'Data {:.3f} ({:.3f})\t'
@@ -227,10 +237,11 @@ class SFRSTrainer(object):
 
     def _parse_data(self, inputs):
         imgs = [input[0] for input in inputs]
-        imgs = torch.stack(imgs).permute(1,0,2,3,4)
-        imgs_easy = imgs[:,:self.neg_num+2]
+        imgs = torch.stack(imgs).permute(1, 0, 2, 3, 4)
+        imgs_easy = imgs[:, :self.neg_num+2]
         # imgs_easy = imgs_easy.contiguous()
-        imgs_diff = torch.cat((imgs[:,0].unsqueeze(1).contiguous(), imgs[:,self.neg_num+2:]), dim=1)
+        imgs_diff = torch.cat((imgs[:, 0].unsqueeze(
+            1).contiguous(), imgs[:, self.neg_num+2:]), dim=1)
         return imgs_easy.cuda(self.gpu), imgs_diff.cuda(self.gpu)
 
     def _forward(self, inputs_easy, inputs_diff, loss_type, gen):
@@ -242,52 +253,66 @@ class SFRSTrainer(object):
         # vlad_anchors: B*1*9*L
         # vlad_pairs: B*(1+neg_num)*9*L
         with torch.no_grad():
-            sim_diff_label, _, _ = self.model_cache(inputs_diff) # B*diff_pos_num*9*9
+            sim_diff_label, _, _ = self.model_cache(
+                inputs_diff)  # B*diff_pos_num*9*9
         sim_diff, _, _ = self.model(inputs_diff)
 
-        if (gen==0):
-            loss_hard = self._get_loss(vlad_anchors[:,0,0], vlad_pairs[:,0,0], vlad_pairs[:,1:,0], B, loss_type)
+        if (gen == 0):
+            loss_hard = self._get_loss(
+                vlad_anchors[:, 0, 0], vlad_pairs[:, 0, 0], vlad_pairs[:, 1:, 0], B, loss_type)
         else:
             loss_hard = 0
             for tri_idx in range(B):
-                loss_hard += self._get_hard_loss(vlad_anchors[tri_idx,0,0].contiguous(), vlad_pairs[tri_idx,0,0].contiguous(), \
-                                                vlad_pairs[tri_idx,1:], sim_easy[tri_idx,1:,0].contiguous().detach(), loss_type)
+                loss_hard += self._get_hard_loss(vlad_anchors[tri_idx, 0, 0].contiguous(), vlad_pairs[tri_idx, 0, 0].contiguous(),
+                                                 vlad_pairs[tri_idx, 1:], sim_easy[tri_idx, 1:, 0].contiguous().detach(), loss_type)
             loss_hard /= B
 
-        log_sim_diff = F.log_softmax(sim_diff[:,:,0].contiguous().view(B,-1)/self.temp[0], dim=1)
-        loss_soft = (- F.softmax(sim_diff_label[:,:,0].contiguous().view(B,-1)/self.temp[gen], dim=1).detach() * log_sim_diff).mean(0).sum()
+        if gen >= len(self.temp):
+            soft_temp = self.temp[-1]
+        else:
+            soft_temp = self.temp[gen]
+        log_sim_diff = F.log_softmax(
+            sim_diff[:, :, 0].contiguous().view(B, -1)/self.temp[0], dim=1)
+        loss_soft = (- F.softmax(sim_diff_label[:, :, 0].contiguous().view(
+            B, -1)/soft_temp, dim=1).detach() * log_sim_diff).mean(0).sum()
 
         return loss_hard, loss_soft
 
     def _get_hard_loss(self, anchors, positives, negatives, score_neg, loss_type):
         # select the most difficult regions for negatives
-        score_arg = score_neg.view(self.neg_num,-1).argmax(1)
-        score_arg = score_arg.unsqueeze(-1).unsqueeze(-1).expand_as(negatives).contiguous()
-        select_negatives = torch.gather(negatives,1,score_arg)
-        select_negatives = select_negatives[:,0]
+        score_arg = score_neg.view(self.neg_num, -1).argmax(1)
+        score_arg = score_arg.unsqueeze(
+            -1).unsqueeze(-1).expand_as(negatives).contiguous()
+        select_negatives = torch.gather(negatives, 1, score_arg)
+        select_negatives = select_negatives[:, 0]
 
-        return self._get_loss(anchors.unsqueeze(0).contiguous(), \
-                            positives.unsqueeze(0).contiguous(), \
-                            select_negatives.unsqueeze(0).contiguous(), 1, loss_type)
+        return self._get_loss(anchors.unsqueeze(0).contiguous(),
+                              positives.unsqueeze(0).contiguous(),
+                              select_negatives.unsqueeze(0).contiguous(), 1, loss_type)
 
     def _get_loss(self, output_anchors, output_positives, output_negatives, B, loss_type):
         L = output_anchors.size(-1)
 
-        if (loss_type=='triplet'):
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
-            output_positives = output_positives.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+        if (loss_type == 'triplet'):
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
+            output_positives = output_positives.unsqueeze(
+                1).expand_as(output_negatives).contiguous().view(-1, L)
             output_negatives = output_negatives.contiguous().view(-1, L)
             loss = F.triplet_margin_loss(output_anchors, output_positives, output_negatives,
-                                            margin=self.margin, p=2, reduction='mean')
+                                         margin=self.margin, p=2, reduction='mean')
 
-        elif (loss_type=='sare_joint'):
-            dist_pos = torch.mm(output_anchors, output_positives.transpose(0,1)) # B*B
+        elif (loss_type == 'sare_joint'):
+            dist_pos = torch.mm(
+                output_anchors, output_positives.transpose(0, 1))  # B*B
             dist_pos = dist_pos.diagonal(0)
             dist_pos = dist_pos.view(B, 1)
 
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
             output_negatives = output_negatives.contiguous().view(-1, L)
-            dist_neg = torch.mm(output_anchors, output_negatives.transpose(0,1)) # B*B
+            dist_neg = torch.mm(
+                output_anchors, output_negatives.transpose(0, 1))  # B*B
             dist_neg = dist_neg.diagonal(0)
             dist_neg = dist_neg.view(B, -1)
 
@@ -296,14 +321,17 @@ class SFRSTrainer(object):
             dist = F.log_softmax(dist, 1)
             loss = (- dist[:, 0]).mean()
 
-        elif (loss_type=='sare_ind'):
-            dist_pos = torch.mm(output_anchors, output_positives.transpose(0,1)) # B*B
+        elif (loss_type == 'sare_ind'):
+            dist_pos = torch.mm(
+                output_anchors, output_positives.transpose(0, 1))  # B*B
             dist_pos = dist_pos.diagonal(0)
             dist_pos = dist_pos.view(B, 1)
 
-            output_anchors = output_anchors.unsqueeze(1).expand_as(output_negatives).contiguous().view(-1, L)
+            output_anchors = output_anchors.unsqueeze(1).expand_as(
+                output_negatives).contiguous().view(-1, L)
             output_negatives = output_negatives.contiguous().view(-1, L)
-            dist_neg = torch.mm(output_anchors, output_negatives.transpose(0,1)) # B*B
+            dist_neg = torch.mm(
+                output_anchors, output_negatives.transpose(0, 1))  # B*B
             dist_neg = dist_neg.diagonal(0)
 
             dist_neg = dist_neg.view(B, -1)

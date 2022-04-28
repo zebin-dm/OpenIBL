@@ -37,12 +37,16 @@ def get_data(args):
 
 
 def vgg16_netvlad(pretrained=False):
-    base_model = models.create('vgg16', pretrained=False)
+    base_model = models.create('vgg16', pretrained=False, cut_at_pooling=True)
     pool_layer = models.create('netvlad', dim=base_model.feature_dim)
-    model = models.create('embednetpca', base_model, pool_layer)
-    if pretrained:
-        model.load_state_dict(torch.hub.load_state_dict_from_url(
-            'https://github.com/yxgeee/OpenIBL/releases/download/v0.1.0-beta/vgg16_netvlad.pth', map_location=torch.device('cpu')))
+    model = models.create('embednet', base_model, pool_layer)
+    pth_file = "/data/zebin/OpenIBL/logs/netVLADBaseline/pitts250k-vgg16/vgg16-sare_ind-lr0.001-tuple7-cd512-rd4096/model_best.pth.tar"
+    state_dict = torch.load(
+        pth_file, map_location=torch.device("cpu"))
+    model.load_state_dict(state_dict['state_dict'])
+    # if pretrained:
+    #     model.load_state_dict(torch.hub.load_state_dict_from_url(
+    #         'https://github.com/yxgeee/OpenIBL/releases/download/v0.1.0-beta/vgg16_netvlad.pth', map_location=torch.device('cpu')))
     return model
 
 
@@ -101,7 +105,6 @@ if __name__ == '__main__':
     # model
     parser.add_argument('--sync-gather', action='store_true')
     # path
-    working_dir = osp.dirname(osp.abspath(__file__))
     parser.add_argument('--data-dir', type=str, metavar='PATH',
-                        default=osp.join(working_dir))
+                        default="/data/zebin/data/Pittsburgh")
     main()

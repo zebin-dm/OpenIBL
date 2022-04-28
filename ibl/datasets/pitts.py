@@ -8,6 +8,7 @@ from ..utils.osutils import mkdir_if_missing
 from ..utils.serialization import write_json, read_mat
 from ..utils.dist_utils import synchronize
 
+
 def parse_dbStruct(path):
     matStruct = read_mat(path)
     dbImage = [f[0].item() for f in matStruct[1]]
@@ -18,8 +19,9 @@ def parse_dbStruct(path):
     numQ = matStruct[6].item()
 
     dbStruct = namedtuple('dbStruct',
-            ['dbImage', 'utmDb', 'qImage', 'utmQ', 'numDb', 'numQ'])
+                          ['dbImage', 'utmDb', 'qImage', 'utmQ', 'numDb', 'numQ'])
     return dbStruct(dbImage, utmDb, qImage, utmQ, numDb, numQ)
+
 
 class Pittsburgh(Dataset):
 
@@ -31,7 +33,8 @@ class Pittsburgh(Dataset):
         self.load(verbose, scale)
 
     def arrange(self):
-        log_print("############################## self.scale : {}".format(self.scale))
+        log_print(
+            "############################## self.scale : {}".format(self.scale))
         if self._check_integrity(self.scale):
             return
 
@@ -44,8 +47,10 @@ class Pittsburgh(Dataset):
         identities = []
         utms = []
         q_pids, db_pids = {}, {}
+
         def register(split):
-            struct = parse_dbStruct(osp.join(raw_dir, 'pitts'+self.scale+'_'+split+'.mat'))
+            struct = parse_dbStruct(
+                osp.join(raw_dir, 'pitts'+self.scale+'_'+split+'.mat'))
             q_ids = []
             for fpath, utm in zip(struct.qImage, struct.utmQ):
                 # print("fpath: {}".format(fpath))
@@ -58,7 +63,7 @@ class Pittsburgh(Dataset):
                     utms.append(utm.tolist())
                     q_ids.append(pid)
                 identities[q_pids[sid]].append(osp.join(q_root, fpath))
-                assert(utms[q_pids[sid]]==utm.tolist())
+                assert(utms[q_pids[sid]] == utm.tolist())
             db_ids = []
             for fpath, utm in zip(struct.dbImage, struct.utmDb):
                 sid = fpath.split('_')[0]
@@ -69,18 +74,18 @@ class Pittsburgh(Dataset):
                     utms.append(utm.tolist())
                     db_ids.append(pid)
                 identities[db_pids[sid]].append(osp.join(db_root, fpath))
-                assert(utms[db_pids[sid]]==utm.tolist())
+                assert(utms[db_pids[sid]] == utm.tolist())
             return q_ids, db_ids
 
         q_train_pids, db_train_pids = register('train')
         train_pids = q_train_pids + db_train_pids
         q_val_pids, db_val_pids = register('val')
         q_test_pids, db_test_pids = register('test')
-        assert len(identities)==len(utms)
+        assert len(identities) == len(utms)
 
         for pid in q_test_pids:
-            if (len(identities[pid])!=24):
-                print (identities[pid])
+            if (len(identities[pid]) != 24):
+                print(identities[pid])
 
         # Save meta information into a json file
         meta = {'name': 'Pittsburgh_'+self.scale,
@@ -102,11 +107,11 @@ class Pittsburgh(Dataset):
             'q_test': sorted(q_test_pids),
             'db_test': sorted(db_test_pids)}
         if rank == 0:
-            write_json(splits, osp.join(self.root, 'splits_'+self.scale+'.json'))
+            write_json(splits, osp.join(
+                self.root, 'splits_'+self.scale+'.json'))
         synchronize()
-        
-        
+
+
 if __name__ == "__main__":
     data_path = "/data/zebin/data/Pittsburgh/pitts"
-    Pittsburgh(root=data_path)
-    
+    Pittsburgh(root=data_path, scale='30k')
